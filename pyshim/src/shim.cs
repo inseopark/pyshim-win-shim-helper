@@ -8,10 +8,24 @@ using System.Reflection;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.Runtime.InteropServices;
+/// <summary>
+/// Forked from https://github.com/ScoopInstaller/Shim
+/// keeping NOLICENSE 
+/// </summary>
 
-namespace Scoop {
+namespace pyshim {
+
+    //https://stackoverflow.com/questions/444798/case-insensitive-containsstring
+    public static class StringExtensions
+    {
+        public static bool Contains(this string source, string toCheck, StringComparison comp)
+        {
+            return source?.IndexOf(toCheck, comp) >= 0;
+        }
+    }
 
     class Program {
+        #region dll import
         [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
         static extern bool CreateProcess(string lpApplicationName,
             string lpCommandLine, IntPtr lpProcessAttributes,
@@ -20,6 +34,7 @@ namespace Scoop {
             [In] ref STARTUPINFO lpStartupInfo,
             out PROCESS_INFORMATION lpProcessInformation);
         const int ERROR_ELEVATION_REQUIRED = 740;
+
 
         [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
         struct STARTUPINFO {
@@ -62,11 +77,28 @@ namespace Scoop {
         [DllImport("kernel32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
         static extern bool GetExitCodeProcess(IntPtr hProcess, out uint lpExitCode);
+        #endregion
+        const string PYENV_ROOT = "PYENV_ROOT";
+        const string PYTHON_VERSION_FILE = ".python-version";
+        const string PYENV_VERSIONS_DIR = "versions";
+        const string NUGET_PYTHON_SCRIPT_DIR = @"tools\Scripts";
+        const string NUGET_PYTHON_BIN_DIR = @"tools";
+
 
         static int Main(string[] args) {
             var exe = Assembly.GetExecutingAssembly().Location;
             var dir = Path.GetDirectoryName(exe);
             var name = Path.GetFileNameWithoutExtension(exe);
+            var curDir = Directory.GetCurrentDirectory();
+            var env_pyenv_root = Environment.GetEnvironmentVariable(PYENV_ROOT, EnvironmentVariableTarget.Process);
+
+            if (string.IsNullOrEmpty(env_pyenv_root))
+            {
+                env_pyenv_root = Path.GetFullPath(Path.Combine(dir, ".."));
+            }
+
+            // generate path
+            var pyenv_versions_combined = Path.Combine(env_pyenv_root, PYENV_VERSIONS_DIR);
 
             var configPath = Path.Combine(dir, name + ".shim");
             if(!File.Exists(configPath)) {
@@ -77,6 +109,57 @@ namespace Scoop {
             var config = Config(configPath);
             var path = Get(config, "path");
             var add_args = Get(config, "args");
+
+            // recursely find python-version in directory
+            var search_path = new DirectoryInfo(curDir);
+            var python_local_version = "";
+            var fn_python_version = "";
+
+            while (search_path != null)
+            {
+                fn_python_version = Path.Combine(search_path.FullName, PYTHON_VERSION_FILE);
+
+                if (!File.Exists(fn_python_version))
+                {
+                    search_path = search_path.Parent;
+                }
+                else
+                {
+                    python_local_version = File.ReadAllText(fn_python_version).Trim();
+                    break;
+                }
+            }
+
+            if (String.IsNullOrEmpty(python_local_version) == false)
+            {
+
+                var version_idx = path.LastIndexOf(pyenv_versions_combined, path.Length, StringComparison.CurrentCultureIgnoreCase);
+                if (version_idx == 0)
+                {
+                    version_idx = pyenv_versions_combined.Length;
+
+                    var remained_path = path.Substring(version_idx + 1);
+
+                    var local_version_path = path.Substring(0, version_idx) + Path.DirectorySeparatorChar +
+                                        python_local_version;  
+
+                    var modified_path = local_version_path + remained_path.Substring(python_local_version.Length);
+
+                    //    Console.Error.WriteLine("Found local python version file :{0}, modified path: {1}]", fn_python_version, modified_path);
+                    path = modified_path;
+
+                    var local_scripts_path = Path.Combine(local_version_path, NUGET_PYTHON_SCRIPT_DIR);
+
+                    //Console.WriteLine("scripts path to be added in runtime: {0}", local_scripts_path);
+                    var env_name = "PATH";
+                    var scope = EnvironmentVariableTarget.Process; // or User
+                    var oldValue = Environment.GetEnvironmentVariable(name, scope);
+                    var newValue = local_scripts_path + ";" +  oldValue;
+                    Environment.SetEnvironmentVariable(env_name, newValue, scope);
+                }
+            }
+
+ 
 
             var si = new STARTUPINFO();
             var pi = new PROCESS_INFORMATION();

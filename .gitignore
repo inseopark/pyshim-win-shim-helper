@@ -1,3 +1,9 @@
 packages/
 build/
 dist/
+vs_buildtool_layout*/
+vs_buildtools*
+.vs/
+bin/
+obj/
+
